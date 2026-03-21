@@ -1,0 +1,20 @@
+[package]
+name = "macroman"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+mouse-keyboard-input = "0.9"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+
+[target.'cfg(target_os = "macos")'.dependencies]
