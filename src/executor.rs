@@ -1,22 +1,21 @@
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot::error::TryRecvError;
 
 use crate::model::{MacroDef, MacroStyle, StepAction};
 use crate::platform::InputDriver;
-
 use crate::platform::PlatformDriver as DriverImpl;
 
-pub enum ExecCmd {
+pub enum ExecutorCommand {
     Trigger(MacroDef),
-    Stop(String),
     StopAll,
 }
 
-pub enum ExecEvent {
+pub enum ExecutorEvent {
     MacroStarted(String),
     MacroStopped(String),
     MacroError { id: String, msg: String },
-    Info(String),
+    CommandThreadTerminated,
 }
 
 struct RunHandle {
@@ -24,19 +23,19 @@ struct RunHandle {
 }
 
 pub struct Executor {
-    cmd_tx: mpsc::UnboundedSender<ExecCmd>,
+    cmd_tx: mpsc::UnboundedSender<ExecutorCommand>,
 }
 
 impl Executor {
-    pub fn new(event_tx: mpsc::UnboundedSender<ExecEvent>) -> Self {
-        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<ExecCmd>();
+    pub fn new(event_tx: mpsc::UnboundedSender<ExecutorEvent>) -> Self {
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<ExecutorCommand>();
 
         tokio::spawn(async move {
             let mut running: HashMap<String, RunHandle> = HashMap::new();
 
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
-                    ExecCmd::Trigger(m) => {
+                    ExecutorCommand::Trigger(m) => {
                         let id = m.id.clone();
                         match m.style {
                             MacroStyle::Trigger => {
@@ -57,12 +56,7 @@ impl Executor {
                             }
                         }
                     }
-                    ExecCmd::Stop(id) => {
-                        if let Some(h) = running.remove(&id) {
-                            let _ = h.stop_tx.send(());
-                        }
-                    }
-                    ExecCmd::StopAll => {
+                    ExecutorCommand::StopAll => {
                         for (_, h) in running.drain() {
                             let _ = h.stop_tx.send(());
                         }
@@ -70,30 +64,32 @@ impl Executor {
                     }
                 }
             }
+
+            let _ = event_tx.send(ExecutorEvent::CommandThreadTerminated);
         });
 
         Self { cmd_tx }
     }
 
-    pub fn send(&self, cmd: ExecCmd) {
+    pub fn send(&self, cmd: ExecutorCommand) {
         let _ = self.cmd_tx.send(cmd);
     }
 }
 
 fn spawn_macro(
     macro_def: MacroDef,
-    event_tx: mpsc::UnboundedSender<ExecEvent>,
+    event_tx: mpsc::UnboundedSender<ExecutorEvent>,
     looping: bool,
 ) -> RunHandle {
     let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
     let id = macro_def.id.clone();
-    let _ = event_tx.send(ExecEvent::MacroStarted(id.clone()));
+    let _ = event_tx.send(ExecutorEvent::MacroStarted(id.clone()));
 
     std::thread::spawn(move || {
         let mut driver = match DriverImpl::create() {
             Ok(d) => d,
             Err(e) => {
-                let _ = event_tx.send(ExecEvent::MacroError {
+                let _ = event_tx.send(ExecutorEvent::MacroError {
                     id: id.clone(),
                     msg: e.to_string(),
                 });
@@ -103,8 +99,10 @@ fn spawn_macro(
 
         'wow: loop {
             for step in &macro_def.steps {
-                if stop_rx.try_recv().is_ok() {
-                    break 'wow;
+                // break when signal received or tx is closed
+                match stop_rx.try_recv() {
+                    Err(TryRecvError::Closed) | Ok(_) => break 'wow,
+                    _ => {}
                 }
 
                 let result = match step {
@@ -117,7 +115,7 @@ fn spawn_macro(
                 };
 
                 if let Err(e) = result {
-                    let _ = event_tx.send(ExecEvent::MacroError {
+                    let _ = event_tx.send(ExecutorEvent::MacroError {
                         id: id.clone(),
                         msg: e.to_string(),
                     });
@@ -130,7 +128,7 @@ fn spawn_macro(
             }
         }
 
-        let _ = event_tx.send(ExecEvent::MacroStopped(id));
+        let _ = event_tx.send(ExecutorEvent::MacroStopped(id));
     });
 
     RunHandle { stop_tx }

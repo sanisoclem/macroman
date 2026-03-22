@@ -1,4 +1,5 @@
 use crate::model::*;
+use ratatui::text::Text;
 use std::collections::HashSet;
 use uuid::Uuid;
 
@@ -33,8 +34,7 @@ pub struct EditorState {
     pub focused_field: EditField,
     pub step_cursor: usize,
     pub step_edit: Option<StepEditState>,
-    pub editing_name: bool,
-    pub editing_trigger: bool,
+    pub text_editing: bool,
 }
 
 impl EditorState {
@@ -48,8 +48,7 @@ impl EditorState {
             focused_field: EditField::Name,
             step_cursor: 0,
             step_edit: None,
-            editing_name: false,
-            editing_trigger: false,
+            text_editing: false,
         }
     }
 
@@ -184,5 +183,54 @@ impl App {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_msg = msg.into();
+    }
+}
+
+// might regret this
+pub enum AppCommand {
+    NewMacro,
+    DeleteMacro,
+    DuplicateMacro,
+
+    FocusList,
+    ListUp,
+    ListDown,
+
+    FocusEditor,
+    OpenEditor,
+    CycleEditField,
+
+    EditName(TextEditCommand),
+    EditTrigger(TextEditCommand),
+    ToggleStyle,
+
+    Quit,
+}
+
+pub enum TextEditCommand {
+    EnterEdit,
+    ExitEdit,
+    Append(char),
+    Delete,
+}
+
+impl AppCommand {
+    pub fn update(self, app: &mut App) {
+        match self {
+            Self::FocusList => app.active_pane = Pane::MacroList,
+            Self::FocusEditor => app.active_pane = Pane::Editor,
+            Self::Quit => app.should_quit = true,
+            Self::CycleEditField => {
+                if let Some(ed) = app.editor.as_mut() {
+                    ed.focused_field = match ed.focused_field {
+                        EditField::Name => EditField::TriggerKey,
+                        EditField::TriggerKey => EditField::Style,
+                        EditField::Style => EditField::Steps,
+                        EditField::Steps => EditField::Name,
+                    };
+                }
+            }
+            _ => {}
+        }
     }
 }

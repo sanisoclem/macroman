@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-const STEP_KINDS: &[&str] = &["PressKey", "ReleaseKey", "Wait"];
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyCombo {
     pub modifiers: Vec<String>,

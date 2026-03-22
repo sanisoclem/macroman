@@ -1,6 +1,9 @@
+use crossterm::Command;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, EditField, Pane, StepEditField, StepEditState};
+use crate::app::{
+    App, AppCommand, EditField, EditorState, Pane, StepEditField, StepEditState, TextEditCommand,
+};
 use crate::model::*;
 
 // TODO: need a way to centrally manage keybinds
@@ -11,26 +14,22 @@ use crate::model::*;
 // TODO: refactor and move logic to app
 // input module should only dispatch commands and data to app
 
-pub fn handle_event(app: &mut App, event: Event) -> bool {
+pub fn handle_event(app: &App, event: Event) -> Option<AppCommand> {
     match event {
         Event::Key(key) => handle_key(app, key),
-        Event::Resize(..) => true,
-        _ => false,
+        _ => None,
     }
 }
 
-fn handle_key(app: &mut App, key: KeyEvent) -> bool {
-    let text_mode = is_editing_text(app);
-
-    if !text_mode {
-        // not typing, handle global commands
+fn handle_key(app: &App, key: KeyEvent) -> Option<AppCommand> {
+    if !is_editing_text(app) {
         if let Some(retval) = handle_global(app, &key) {
-            return retval;
+            return Some(retval);
         }
     }
 
     match app.active_pane.clone() {
-        Pane::MacroList => handle_list(app, key),
+        Pane::MacroList => handle_list(key),
         Pane::Editor => handle_editor(app, key),
     }
 }
@@ -46,141 +45,98 @@ fn is_editing_text(app: &App) -> bool {
     false
 }
 
-fn handle_global(app: &mut App, key: &KeyEvent) -> Option<bool> {
+fn handle_global(app: &App, key: &KeyEvent) -> Option<AppCommand> {
     match key {
         KeyEvent {
             code: KeyCode::Char('q'),
             modifiers: KeyModifiers::NONE,
             ..
-        } => {
-            app.should_quit = true;
-            Some(true)
-        }
+        } => Some(AppCommand::Quit),
         KeyEvent {
             code: KeyCode::Char('h'),
             modifiers: KeyModifiers::CONTROL,
             ..
-        } => {
-            app.active_pane = Pane::MacroList;
-            Some(true)
-        }
+        } => Some(AppCommand::FocusList),
         KeyEvent {
             code: KeyCode::Char('l'),
             modifiers: KeyModifiers::CONTROL,
             ..
-        } => {
-            app.active_pane = Pane::Editor;
-            Some(true)
-        }
+        } => Some(AppCommand::FocusEditor),
         KeyEvent {
             code: KeyCode::Tab,
             modifiers: KeyModifiers::NONE,
             ..
-        } => match (&app.active_pane, app.editor.as_mut()) {
-            (Pane::Editor, Some(ed)) => {
-                ed.focused_field = match ed.focused_field {
-                    EditField::Name => EditField::TriggerKey,
-                    EditField::TriggerKey => EditField::Style,
-                    EditField::Style => EditField::Steps,
-                    EditField::Steps => EditField::Name,
-                };
-                Some(true)
-            }
+        } => match (&app.active_pane, app.editor.as_ref()) {
+            (Pane::Editor, Some(_ed)) => Some(AppCommand::CycleEditField),
             _ => None,
         },
         _ => None,
     }
 }
 
-fn handle_list(app: &mut App, key: KeyEvent) -> bool {
+fn handle_list(key: KeyEvent) -> Option<AppCommand> {
     match key.code {
-        KeyCode::Up | KeyCode::Char('k') => app.list_up(),
-        KeyCode::Down | KeyCode::Char('j') => app.list_down(),
-        KeyCode::Enter => app.open_editor(),
-        KeyCode::Char('n') => {
-            app.add_macro();
-            app.set_status("New macro created — press Enter to edit");
-        }
-        KeyCode::Char('d') => {
-            if !app.macros.is_empty() {
-                let name = app.macros[app.list_cursor].name.clone();
-                app.remove_macro();
-                app.set_status(format!("Deleted '{name}'"));
-            }
-        }
-        KeyCode::Char('u') => {
-            app.duplicate_macro();
-            app.set_status("Macro duplicated");
-        }
-        _ => return false,
+        KeyCode::Up | KeyCode::Char('k') => Some(AppCommand::ListUp),
+        KeyCode::Down | KeyCode::Char('j') => Some(AppCommand::ListDown),
+        KeyCode::Enter => Some(AppCommand::OpenEditor),
+        KeyCode::Char('n') => Some(AppCommand::NewMacro),
+        KeyCode::Char('d') => Some(AppCommand::DeleteMacro),
+        KeyCode::Char('u') => Some(AppCommand::DuplicateMacro),
+        _ => return None,
     }
-    true
 }
 
-fn handle_editor(app: &mut App, key: KeyEvent) -> bool {
-    {
-        let Some(ed) = &app.editor else { return false };
-        if ed.editing_name {
-            return edit_name(app, key);
-        }
-        if ed.editing_trigger {
-            return edit_trigger(app, key);
-        }
-        if ed.step_edit.is_some() {
-            return edit_step(app, key);
-        }
-    }
-
-    let Some(ed) = app.editor.as_mut() else {
-        return false;
+fn handle_editor(app: &App, key: KeyEvent) -> Option<AppCommand> {
+    let Some(ed) = app.editor.as_ref() else {
+        return None;
     };
-    match ed.focused_field.clone() {
-        EditField::Name => {
-            if key.code == KeyCode::Enter {
-                ed.editing_name = true;
-                true
-            } else {
-                false
-            }
+
+    {
+        if ed.text_editing
+            && let Some(a) = edit_text(key)
+        {
+            return match ed.focused_field {
+                EditField::Name => Some(AppCommand::EditName(a)),
+                EditField::TriggerKey => Some(AppCommand::EditTrigger(a)),
+                _ => None,
+            };
         }
-        EditField::TriggerKey => {
-            if key.code == KeyCode::Enter {
-                ed.editing_trigger = true;
-                true
-            } else {
-                false
-            }
-        }
-        EditField::Style => match key.code {
-            KeyCode::Left | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
-                ed.style = match ed.style {
-                    MacroStyle::Trigger => MacroStyle::ToggleLoop,
-                    MacroStyle::ToggleLoop => MacroStyle::Trigger,
-                };
-                app.commit_editor();
-                true
-            }
-            _ => false,
-        },
-        EditField::Steps => steps_nav(app, key),
+    }
+
+    match (&ed.focused_field, key) {
+        (
+            EditField::Name,
+            KeyEvent {
+                code: KeyCode::Enter,
+                ..
+            },
+        ) => Some(AppCommand::EditName(TextEditCommand::EnterEdit)),
+        (
+            EditField::TriggerKey,
+            KeyEvent {
+                code: KeyCode::Enter,
+                ..
+            },
+        ) => Some(AppCommand::EditTrigger(TextEditCommand::EnterEdit)),
+        (
+            EditField::Style,
+            KeyEvent {
+                code: KeyCode::Left | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' '),
+                ..
+            },
+        ) => Some(AppCommand::ToggleStyle),
+        (EditField::Steps, k) => steps_nav(k),
+        _ => None,
     }
 }
 
-fn edit_name(app: &mut App, key: KeyEvent) -> bool {
-    let ed = app.editor.as_mut().expect("Editor should not be none");
+fn edit_text(key: KeyEvent) -> Option<TextEditCommand> {
     match key.code {
-        KeyCode::Char(c) => ed.name_buf.push(c),
-        KeyCode::Backspace => {
-            ed.name_buf.pop();
-        }
-        KeyCode::Enter | KeyCode::Esc => {
-            ed.editing_name = false;
-            app.commit_editor();
-            app.set_status("Name saved");
-        }
-        _ => {}
+        KeyCode::Char(c) => Some(TextEditCommand::Append(c)),
+        KeyCode::Backspace => Some(TextEditCommand::Delete),
+        KeyCode::Enter | KeyCode::Esc => Some(TextEditCommand::ExitEdit),
+        _ => None,
     }
-    true
 }
 
 fn edit_trigger(app: &mut App, key: KeyEvent) -> bool {
@@ -200,7 +156,7 @@ fn edit_trigger(app: &mut App, key: KeyEvent) -> bool {
     true
 }
 
-fn steps_nav(app: &mut App, key: KeyEvent) -> bool {
+fn steps_nav(key: KeyEvent) -> Option<AppCommand> {
     let ed = app.editor.as_mut().expect("Editor should not be none");
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => {

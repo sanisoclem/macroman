@@ -18,7 +18,9 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::mpsc;
 
 use app::App;
-use executor::{ExecCmd, ExecEvent, Executor};
+use executor::{Executor, ExecutorCommand, ExecutorEvent};
+
+use crate::app::AppCommand;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -48,7 +50,7 @@ async fn main() -> Result<()> {
 async fn run(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
     let mut app = App::new();
 
-    let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<ExecEvent>();
+    let (ev_tx, mut ev_rx) = mpsc::unbounded_channel::<ExecutorEvent>();
     let executor = Executor::new(ev_tx);
 
     loop {
@@ -56,21 +58,21 @@ async fn run(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
 
         while let Ok(ev) = ev_rx.try_recv() {
             match ev {
-                ExecEvent::MacroStarted(id) => {
+                ExecutorEvent::MacroStarted(id) => {
                     app.running_ids.insert(id);
                     app.set_status("Macro started");
                 }
-                ExecEvent::MacroStopped(id) => {
+                ExecutorEvent::MacroStopped(id) => {
                     app.running_ids.remove(&id);
                     app.set_status("Macro stopped");
                 }
-                ExecEvent::MacroError { id, msg } => {
+                ExecutorEvent::MacroError { id, msg } => {
                     // TODO: toasts
                     app.running_ids.remove(&id);
                     app.set_status(format!("Error: {msg}"));
                 }
-                ExecEvent::Info(msg) => {
-                    app.set_status(msg.clone());
+                ExecutorEvent::CommandThreadTerminated => {
+                    app.set_status("Command thread terminated".to_owned());
                 }
             }
         }
@@ -81,18 +83,19 @@ async fn run(term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
             if let Event::Key(k) = &ev {
                 if k.code == crossterm::event::KeyCode::F(5) {
                     if let Some(m) = app.macros.get(app.list_cursor) {
-                        executor.send(ExecCmd::Trigger(m.clone()));
+                        executor.send(ExecutorCommand::Trigger(m.clone()));
                         app.set_status(format!("Triggered '{}'", m.name));
                     }
                     continue;
                 }
             }
 
-            input::handle_event(&mut app, ev);
+            let cmd: AppCommand = input::handle_event(&app, ev);
+            cmd.update(&mut app);
         }
 
         if app.should_quit {
-            executor.send(ExecCmd::StopAll);
+            executor.send(ExecutorCommand::StopAll);
             break;
         }
     }
