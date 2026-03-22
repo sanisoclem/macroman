@@ -1,6 +1,6 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, EditField, Pane, StepEditField, StepEditState, STEP_KINDS};
+use crate::app::{App, EditField, Pane, StepEditField, StepEditState};
 use crate::model::*;
 
 // TODO: need a way to centrally manage keybinds
@@ -376,6 +376,8 @@ fn cancel_step(app: &mut App) {
     app.commit_editor();
 }
 
+// TODO: remove this
+const STEP_KINDS: &[&str] = &["PressKey", "ReleaseKey", "Wait"];
 fn cycle_kind(current: &str, delta: i32) -> String {
     // TODO: make a dropdown?
     let pos = STEP_KINDS.iter().position(|&k| k == current).unwrap_or(0) as i32;

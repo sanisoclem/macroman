@@ -2,8 +2,6 @@ use crate::model::*;
 use std::collections::HashSet;
 use uuid::Uuid;
 
-pub const STEP_KINDS: &[&str] = &["PressKey", "ReleaseKey", "Wait"];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditField {
     Name,
@@ -91,7 +89,7 @@ impl App {
             active_pane: Pane::MacroList,
             editor: None,
             running_ids: HashSet::new(),
-            status_msg: "Ready — [n] new  [Enter] edit  [F5] run  [q] quit".into(),
+            status_msg: "Ready".into(),
             should_quit: false,
         };
 

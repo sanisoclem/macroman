@@ -1,4 +1,5 @@
 mod app;
+mod colors;
 mod executor;
 mod input;
 mod model;
